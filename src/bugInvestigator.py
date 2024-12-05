@@ -1,5 +1,5 @@
 """ This code imports essential modules like ast, code_diff, importlib, os, sys, and Enum, and defines threadingStyle enum.
-It then defines findProbeFile and probeBugs functions to output a bugTypeMessage based on buggy and patched code samples and 
+It then defines findProbeFile and probeBugs functions to output a bugTypeMessage based on buggy and patched code samples and
 uses processFiles and probeBugs functions to classify the bugs in the given code samples.
 """
 
@@ -25,7 +25,8 @@ def findProbeFile():
     try:
         assert os.path.exists(bugPruningFilePath), "No 'probe.py' file detected."
     except AssertionError as errorMessage:
-        print(errorMessage)
+        # print(errorMessage)
+        pass
     finally:
         return
 
@@ -46,7 +47,7 @@ def probeBugs(buggy, patched):
         implemented classifiers.
     """
     if status == False:
-        bugTypeMessage = "No quantum error detected!"
+        bugTypeMessage['default'] = ["No quantum error detected!"]
     return bugTypeMessage
 
 

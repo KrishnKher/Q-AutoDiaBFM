@@ -2,6 +2,25 @@ import ast
 import numpy as np
 import re
 
+#TODO: Add more iteration options (dictionaries and list comprehensions)
+def extractIters(node: ast.For):
+    target = ast.Name(node.target)
+    target_id = target.id
+    if isinstance(node.iter, ast.Call) and isinstance(node.iter.func, ast.Name) and node.iter.func.id == 'range':
+        # Cannot handle range declarations with dynamically calculated endpoints
+        if len(node.iter.args) == 1:
+            if isinstance(node.iter.args[0], ast.Constant):
+                iterations = node.iter.args[0].value
+                return iterations
+        else:
+            if isinstance(node.iter.args[0], ast.Constant) and isinstance(node.iter.args[1], ast.Constant):
+                iterations = node.iter.args[1].value - node.iter.args[0].value
+                return iterations
+        return None
+    elif isinstance(node.iter, ast.List):
+        iterations = len(node.iter.elts)
+        return iterations
+
 
 def returnArgs(args):
     args = "".join(args.split(" "))
@@ -32,8 +51,8 @@ def returnArgs(args):
                     square.append(value)
                 else:
                     paren.append(value)
-            value = ""
         else:
+            value = ""
             value += char
 
     for args in range(len(paren)):
@@ -46,31 +65,35 @@ def returnArgs(args):
     return np.array(paren)
 
 
-def measurementRegisterError(codeSample):
+def measurementRegisterError(codeSample, astSample):
+    # TODO: Deprecate, replace with more robust AST traversal
     availableMeasurementFunctions = ["measure", "measure_all", "measure_inactive"]
     regexPattern = ".+\.measure.*"
     buggy, patched = codeSample[0], codeSample[1]
-    buggyID, patchedID = {}, {}
+    buggyMeasures, patchedMeasures = {}, {}
     buggyMeasure, patchedMeasure = {}, {}
     buggyList = list(filter(("").__ne__, buggy.split("\n")))
     patchedList = list(filter(("").__ne__, patched.split("\n")))
     buggyLine, patchedLine = {}, {}
     buggyArgs, patchedArgs = [], []
-    astBuggy, astPatched = ast.walk(ast.parse(buggy)), ast.walk(ast.parse(patched))
+    # astBuggy, astPatched = ast.walk(ast.parse(buggy)), ast.walk(ast.parse(patched))
+    astBuggy, astPatched = ast.walk(astSample[0]), ast.walk(astSample[1])
 
     """ Deduce if there is a Quantum Circuit object associated with the patch."""
     for node in astBuggy:
         if isinstance(node, ast.Assign):
             for id in getattr(node, "targets"):
                 if (
-                    id.id not in buggyID
+                    id.id not in buggyMeasures
+                    and isinstance(node.value, ast.Call)
+                    and isinstance(node.value.func, ast.Name)
                     and getattr(node, "value").func.id == "QuantumCircuit"
                 ):
-                    buggyID[id.id] = []
+                    buggyMeasures[id.id] = []
 
         """ Using the AST to deduce if there is measure function amongst the aforementioned types."""
         if isinstance(node, ast.Expr):
-            if getattr(node, "value").func.attr in availableMeasurementFunctions:
+            if isinstance(node.value.func, ast.Attribute) and getattr(node, "value").func.attr in availableMeasurementFunctions:
                 if getattr(node, "value").func.value.id not in buggyMeasure:
                     buggyMeasure[getattr(node, "value").func.value.id] = []
                     buggyMeasure[getattr(node, "value").func.value.id].append(
@@ -86,13 +109,15 @@ def measurementRegisterError(codeSample):
         if isinstance(node, ast.Assign):
             for id in getattr(node, "targets"):
                 if (
-                    id.id not in patchedID
+                    id.id not in buggyMeasures
+                    and isinstance(node.value, ast.Call)
+                    and isinstance(node.value.func, ast.Name)
                     and getattr(node, "value").func.id == "QuantumCircuit"
                 ):
-                    patchedID[id.id] = []
+                    patchedMeasures[id.id] = []
 
-        if isinstance(node, ast.Expr):
-            if getattr(node, "value").func.attr in availableMeasurementFunctions:
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+            if isinstance(node.value.func, ast.Attribute) and getattr(node, "value").func.attr in availableMeasurementFunctions:
                 if getattr(node, "value").func.value.id not in patchedMeasure:
                     patchedMeasure[getattr(node, "value").func.value.id] = []
                     patchedMeasure[getattr(node, "value").func.value.id].append(
@@ -103,10 +128,10 @@ def measurementRegisterError(codeSample):
                         getattr(node, "value").func.attr
                     )
 
-    """ Considering the cases when there is a one to one mapping of the QuantumCircuits 
+    """ Considering the cases when there is a one to one mapping of the QuantumCircuits
     in buggy code to the QuantumCircuits in patched code. """
 
-    if len(buggyID) != len(patchedID):
+    if len(buggyMeasures) != len(patchedMeasures):
         return False
 
     """ Assuming the existence of a singleton Quantum Circuit object,
@@ -161,10 +186,112 @@ def measurementRegisterError(codeSample):
 
     return False
 
+def repeatedMeasurementError(codeSample, astSample):
+    availableMeasurementFunctions = ["measure", "measure_all", "measure_inactive"]
+    regexPattern = ".+\.measure.*"
 
-def detectIncorrectMeasurement(codeSample):
+    buggy, patched = codeSample[0], codeSample[1]
+    buggyMeasures, patchedMeasures = {}, {}
+    astBuggy, astPatched = ast.walk(astSample[0]), ast.walk(astSample[1])
+
+    for node in astBuggy:
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            for target in node.targets:
+                if (target.id not in buggyMeasures
+                        and isinstance(node.value.func, ast.Name)
+                        and node.value.func.id == 'QuantumCircuit'):
+                    buggyMeasures[target.id] = 0
+
+    for node in astPatched:
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            for target in node.targets:
+                if (target.id not in patchedMeasures
+                        and isinstance(node.value.func, ast.Name)
+                        and node.value.func.id == 'QuantumCircuit'):
+                    patchedMeasures[target.id] = 0
+
+
+
+
+    astBuggy, astPatched = ast.walk(ast.parse(buggy)), ast.walk(ast.parse(patched))
+    buggyCircIDs, patchedCircIDs = buggyMeasures.keys(), patchedMeasures.keys()
+
+    for node in astBuggy:
+        if isinstance(node, ast.For):
+            iterations = extractIters(node)
+            if not iterations:
+                continue
+            else:
+                for subnode in node.body:
+                    if isinstance(subnode, ast.Expr) and isinstance(subnode.value, ast.Call):
+                        id = subnode.value.func.value.id
+                        func = subnode.value.func.attr
+                        if id in buggyMeasures.keys() and func in availableMeasurementFunctions:
+                            buggyMeasures[id] += iterations - 1
+        else:
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Attribute):
+                if isinstance(node.value.func.value, ast.Name):
+                    id = node.value.func.value.id
+                func = node.value.func.attr
+                if id in buggyMeasures.keys() and func in availableMeasurementFunctions:
+                    buggyMeasures[id] += 1
+
+
+    for node in astPatched:
+        if isinstance(node, ast.For):
+            iterations = extractIters(node)
+            if not iterations:
+                continue
+            else:
+                for subnode in node.body:
+                    if isinstance(subnode, ast.Expr) and isinstance(subnode.value, ast.Call):
+                        id = subnode.value.func.value.id
+                        func = subnode.value.func.attr
+                        if id in patchedMeasures.keys() and func in availableMeasurementFunctions:
+                            patchedMeasures[id] += iterations - 1
+        else:
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Attribute):
+                if isinstance(node.value.func.value, ast.Name):
+                    id = node.value.func.value.id
+                    func = node.value.func.attr
+                if id in patchedMeasures.keys() and func in availableMeasurementFunctions:
+                    patchedMeasures[id] += 1
+
+    for id in buggyCircIDs:
+        if id in patchedCircIDs:
+            if buggyMeasures[id] > patchedMeasures[id]:
+                return True
+
+    return False
+
+
+def detectIncorrectMeasurement(codeSample, astSample):
     status = False
-    bugTypeMessage = "Measurement(s) performed incorrectly."
-    status = measurementRegisterError(codeSample)
+    bugTypeMessage1 = "Measurement(s) performed incorrectly"
+    bugTypeMessage2 = "Excessive measurements performed"
+    try:
+        status1 = measurementRegisterError(codeSample, astSample)
+        print("measurementRegister WORKS")
+    except:
+        status1 = False
+        # status1 = True
+        print("error in measurementRegisterError")
+        raise
+    try:
+        status2 = repeatedMeasurementError(codeSample, astSample)
+        print("repeatedMeasurement WORKS")
+    except:
+        status2 = False
+        # status2 = True
+        print("error in repeatedMeasurementError")
+        raise
+    bugTypeMessage = ''
+    if status1 and status2:
+        bugTypeMessage += bugTypeMessage1 + ' and ' + bugTypeMessage2 + '.'
+    elif status1:
+        bugTypeMessage += bugTypeMessage1 + '.'
+    elif status2:
+        bugTypeMessage += bugTypeMessage2 + '.'
+    status = status1 or status2
 
     return status, bugTypeMessage
